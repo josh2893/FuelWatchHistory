@@ -120,11 +120,18 @@
               <h2 id="chartTitle">Fuel price history</h2>
               <p id="chartSubtitle">Loading data…</p>
             </div>
-            <div class="legend">
-              <span class="legend-item"><i class="legend-dot avg-dot"></i>Average</span>
-              <span class="legend-item"><i class="legend-dot min-dot"></i>Low</span>
-              <span class="legend-item"><i class="legend-dot max-dot"></i>High</span>
+            <div class="chart-actions">
+              <button id="resetZoomButton" class="chart-action-button" type="button">Reset zoom</button>
+              <div class="legend">
+                <span class="legend-item"><i class="legend-dot avg-dot"></i>Average</span>
+                <span class="legend-item"><i class="legend-dot min-dot"></i>Low</span>
+                <span class="legend-item"><i class="legend-dot max-dot"></i>High</span>
+              </div>
             </div>
+          </div>
+
+          <div class="chart-helper-row">
+            <p class="chart-helper-text">Drag across the chart to zoom into a date range. Double-click the chart or use Reset zoom to jump back out.</p>
           </div>
 
           <div class="chart-container">

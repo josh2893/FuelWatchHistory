@@ -9,6 +9,12 @@ const state = {
   showMax: true,
   status: null,
   hoverIndex: null,
+  chartGeometry: null,
+  dragSelection: {
+    active: false,
+    startX: null,
+    currentX: null,
+  },
 };
 
 const elements = {
@@ -35,6 +41,7 @@ const elements = {
   progressFill: document.getElementById('progressFill'),
   progressLabel: document.getElementById('progressLabel'),
   refreshButton: document.getElementById('refreshButton'),
+  resetZoomButton: document.getElementById('resetZoomButton'),
   presetButtons: Array.from(document.querySelectorAll('[data-range]')),
 };
 
@@ -45,6 +52,8 @@ const COLORS = {
   grid: 'rgba(100, 116, 139, 0.16)',
   text: '#172033',
   muted: '#64748b',
+  selection: 'rgba(37, 99, 235, 0.14)',
+  selectionBorder: 'rgba(37, 99, 235, 0.8)',
 };
 
 async function fetchJson(url, options = {}) {
@@ -68,9 +77,28 @@ function formatDateLabel(dateString, mode = 'long') {
   const date = new Date(`${dateString}T00:00:00`);
   return date.toLocaleDateString(undefined, {
     day: mode === 'long' ? 'numeric' : undefined,
-    month: mode === 'short' ? 'short' : 'short',
+    month: 'short',
     year: 'numeric',
   });
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function clearDragSelection() {
+  state.dragSelection.active = false;
+  state.dragSelection.startX = null;
+  state.dragSelection.currentX = null;
+}
+
+function updateResetZoomButton() {
+  if (!state.metadata?.min_date || !state.metadata?.max_date || !state.startDate || !state.endDate) {
+    elements.resetZoomButton.disabled = true;
+    return;
+  }
+
+  elements.resetZoomButton.disabled = state.startDate === state.metadata.min_date && state.endDate === state.metadata.max_date;
 }
 
 function setPreset(range) {
@@ -100,6 +128,7 @@ function setPreset(range) {
     button.classList.toggle('active', button.dataset.range === range);
   });
 
+  updateResetZoomButton();
   loadSeries();
 }
 
@@ -182,6 +211,24 @@ function resizeCanvas() {
   canvas.height = Math.floor(height * ratio);
 }
 
+function drawSelectionOverlay(ctx, width, height) {
+  if (!state.dragSelection.active || state.dragSelection.startX == null || state.dragSelection.currentX == null || !state.chartGeometry) {
+    return;
+  }
+
+  const { padding, plotWidth } = state.chartGeometry;
+  const leftBound = padding.left;
+  const rightBound = padding.left + plotWidth;
+  const startX = clamp(Math.min(state.dragSelection.startX, state.dragSelection.currentX), leftBound, rightBound);
+  const endX = clamp(Math.max(state.dragSelection.startX, state.dragSelection.currentX), leftBound, rightBound);
+
+  ctx.fillStyle = COLORS.selection;
+  ctx.fillRect(startX, padding.top, Math.max(0, endX - startX), height - padding.top - padding.bottom);
+  ctx.strokeStyle = COLORS.selectionBorder;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(startX, padding.top, Math.max(0, endX - startX), height - padding.top - padding.bottom);
+}
+
 function drawChart() {
   resizeCanvas();
   const canvas = elements.chartCanvas;
@@ -200,6 +247,7 @@ function drawChart() {
   ].filter(Boolean);
 
   if (!points.length || !metrics.length) {
+    state.chartGeometry = null;
     elements.chartEmptyState.classList.remove('hidden');
     elements.chartEmptyState.textContent = metrics.length
       ? 'No data is available for this combination yet.'
@@ -223,6 +271,17 @@ function drawChart() {
 
   const scaleX = (timestamp) => padding.left + ((timestamp - xStart) / (xEnd - xStart || 1)) * plotWidth;
   const scaleY = (value) => padding.top + (1 - (value - domainMin) / (domainMax - domainMin || 1)) * plotHeight;
+
+  state.chartGeometry = {
+    padding,
+    plotWidth,
+    plotHeight,
+    width,
+    height,
+    xStart,
+    xEnd,
+    scaleX,
+  };
 
   ctx.strokeStyle = COLORS.grid;
   ctx.lineWidth = 1;
@@ -282,7 +341,7 @@ function drawChart() {
     ctx.stroke();
   }
 
-  if (typeof state.hoverIndex === 'number' && points[state.hoverIndex]) {
+  if (typeof state.hoverIndex === 'number' && points[state.hoverIndex] && !state.dragSelection.active) {
     const point = points[state.hoverIndex];
     const timestamp = new Date(`${point.date}T00:00:00`).getTime();
     const x = scaleX(timestamp);
@@ -304,18 +363,20 @@ function drawChart() {
       ctx.stroke();
     });
   }
+
+  drawSelectionOverlay(ctx, width, height);
 }
 
-function updateTooltip(event) {
+function getNearestPointIndexFromClientX(clientX) {
   const points = state.series?.points || [];
-  if (!points.length) return;
+  if (!points.length || !state.chartGeometry) return null;
 
   const rect = elements.chartCanvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const chartWidth = rect.width;
-  const start = new Date(`${state.startDate}T00:00:00`).getTime();
-  const end = new Date(`${state.endDate}T00:00:00`).getTime();
-  const timestamp = start + ((x / chartWidth) * (end - start));
+  const x = clientX - rect.left;
+  const { padding, plotWidth, xStart, xEnd } = state.chartGeometry;
+  const boundedX = clamp(x, padding.left, padding.left + plotWidth);
+  const ratioValue = (boundedX - padding.left) / (plotWidth || 1);
+  const timestamp = xStart + ((xEnd - xStart) * ratioValue);
 
   let nearestIndex = 0;
   let smallestGap = Infinity;
@@ -328,9 +389,21 @@ function updateTooltip(event) {
     }
   });
 
+  return nearestIndex;
+}
+
+function updateTooltip(event) {
+  const points = state.series?.points || [];
+  if (!points.length || state.dragSelection.active) return;
+
+  const nearestIndex = getNearestPointIndexFromClientX(event.clientX);
+  if (nearestIndex == null) return;
+
   state.hoverIndex = nearestIndex;
   drawChart();
 
+  const rect = elements.chartCanvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
   const point = points[nearestIndex];
   const tooltipLines = [];
   if (state.showAvg) tooltipLines.push(`<div class="tooltip-line"><span>Average</span><strong>${formatNumber(point.avg_price)}</strong></div>`);
@@ -349,6 +422,36 @@ function updateTooltip(event) {
   elements.chartTooltip.classList.remove('hidden');
 }
 
+function applyDraggedZoom() {
+  if (!state.dragSelection.active) return;
+
+  const startIndex = getNearestPointIndexFromClientX(state.dragSelection.startX + elements.chartCanvas.getBoundingClientRect().left);
+  const endIndex = getNearestPointIndexFromClientX(state.dragSelection.currentX + elements.chartCanvas.getBoundingClientRect().left);
+  clearDragSelection();
+
+  if (startIndex == null || endIndex == null || !state.series?.points?.length) {
+    drawChart();
+    return;
+  }
+
+  const points = state.series.points;
+  const [fromIndex, toIndex] = [startIndex, endIndex].sort((a, b) => a - b);
+  if (toIndex - fromIndex < 2) {
+    drawChart();
+    return;
+  }
+
+  state.startDate = points[fromIndex].date;
+  state.endDate = points[toIndex].date;
+  elements.startDateInput.value = state.startDate;
+  elements.endDateInput.value = state.endDate;
+  elements.presetButtons.forEach((button) => button.classList.remove('active'));
+  updateResetZoomButton();
+  elements.chartTooltip.classList.add('hidden');
+  state.hoverIndex = null;
+  loadSeries();
+}
+
 async function loadMetadata() {
   const metadata = await fetchJson('/api/metadata');
   state.metadata = metadata;
@@ -356,6 +459,7 @@ async function loadMetadata() {
   if (!metadata.rows || !metadata.fuel_types.length || !metadata.min_date || !metadata.max_date) {
     elements.coverageText.textContent = 'Archive is still syncing. Fuel types will appear here once enough data has been processed.';
     elements.chartSubtitle.textContent = 'Waiting for the first processed records…';
+    updateResetZoomButton();
     return false;
   }
 
@@ -379,12 +483,14 @@ async function loadMetadata() {
   elements.endDateInput.min = metadata.min_date;
   elements.endDateInput.max = metadata.max_date;
   applyCoverageText();
+  updateResetZoomButton();
   return true;
 }
 
 async function loadSeries() {
   if (!state.fuelType || !state.startDate || !state.endDate) return;
   setChartTitle();
+  updateResetZoomButton();
   elements.chartSubtitle.textContent = 'Loading series…';
   state.series = null;
   drawChart();
@@ -401,6 +507,7 @@ async function loadSeries() {
     state.hoverIndex = null;
     updateSummary(payload.summary);
     setChartTitle();
+    updateResetZoomButton();
     drawChart();
   } catch (error) {
     state.series = { points: [] };
@@ -435,12 +542,14 @@ function bindEvents() {
   elements.startDateInput.addEventListener('change', (event) => {
     state.startDate = event.target.value;
     elements.presetButtons.forEach((button) => button.classList.remove('active'));
+    updateResetZoomButton();
     loadSeries();
   });
 
   elements.endDateInput.addEventListener('change', (event) => {
     state.endDate = event.target.value;
     elements.presetButtons.forEach((button) => button.classList.remove('active'));
+    updateResetZoomButton();
     loadSeries();
   });
 
@@ -473,12 +582,48 @@ function bindEvents() {
     }
   });
 
+  elements.resetZoomButton.addEventListener('click', () => {
+    setPreset('all');
+  });
+
   window.addEventListener('resize', drawChart);
-  elements.chartCanvas.addEventListener('mousemove', updateTooltip);
-  elements.chartCanvas.addEventListener('mouseleave', () => {
+  elements.chartCanvas.addEventListener('mousemove', (event) => {
+    if (state.dragSelection.active) {
+      const rect = elements.chartCanvas.getBoundingClientRect();
+      state.dragSelection.currentX = event.clientX - rect.left;
+      elements.chartTooltip.classList.add('hidden');
+      drawChart();
+      return;
+    }
+    updateTooltip(event);
+  });
+
+  elements.chartCanvas.addEventListener('mousedown', (event) => {
+    if (event.button !== 0 || !state.series?.points?.length || !state.chartGeometry) return;
+    const rect = elements.chartCanvas.getBoundingClientRect();
+    state.dragSelection.active = true;
+    state.dragSelection.startX = event.clientX - rect.left;
+    state.dragSelection.currentX = event.clientX - rect.left;
     state.hoverIndex = null;
     elements.chartTooltip.classList.add('hidden');
     drawChart();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!state.dragSelection.active) return;
+    applyDraggedZoom();
+  });
+
+  elements.chartCanvas.addEventListener('mouseleave', () => {
+    if (state.dragSelection.active) return;
+    state.hoverIndex = null;
+    elements.chartTooltip.classList.add('hidden');
+    drawChart();
+  });
+
+  elements.chartCanvas.addEventListener('dblclick', () => {
+    if (!state.metadata?.min_date || !state.metadata?.max_date) return;
+    setPreset('all');
   });
 }
 
