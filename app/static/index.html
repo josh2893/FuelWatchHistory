@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FuelWatch History WA</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Western Australia historical fuel prices</p>
+          <h1>FuelWatch History Explorer</h1>
+          <p class="hero-copy">
+            Explore statewide daily average, low, and high fuel prices from the
+            FuelWatch archive, with flexible date ranges and fuel-type coverage.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="refreshButton" class="secondary-button">Refresh archive</button>
+          <div id="statusPill" class="status-pill">Connecting…</div>
+        </div>
+      </header>
+
+      <section id="syncBanner" class="sync-banner hidden">
+        <div>
+          <strong>Archive sync in progress</strong>
+          <p id="syncMessage">Preparing archive…</p>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><span id="progressFill"></span></div>
+          <div id="progressLabel" class="progress-label">0%</div>
+        </div>
+      </section>
+
+      <main class="dashboard-grid">
+        <section class="card controls-card">
+          <div class="card-header">
+            <h2>Filters</h2>
+            <p>Choose the fuel type and date range to plot.</p>
+          </div>
+
+          <div class="controls-grid">
+            <label>
+              <span>Fuel type</span>
+              <select id="fuelTypeSelect"></select>
+            </label>
+
+            <label>
+              <span>Start date</span>
+              <input id="startDateInput" type="date" />
+            </label>
+
+            <label>
+              <span>End date</span>
+              <input id="endDateInput" type="date" />
+            </label>
+          </div>
+
+          <div class="preset-row">
+            <button class="chip-button" data-range="1y">1Y</button>
+            <button class="chip-button" data-range="5y">5Y</button>
+            <button class="chip-button" data-range="10y">10Y</button>
+            <button class="chip-button" data-range="all">All</button>
+          </div>
+
+          <div class="toggle-group">
+            <label class="toggle-pill">
+              <input id="toggleAvg" type="checkbox" checked />
+              <span>Average</span>
+            </label>
+            <label class="toggle-pill">
+              <input id="toggleMin" type="checkbox" checked />
+              <span>Low</span>
+            </label>
+            <label class="toggle-pill">
+              <input id="toggleMax" type="checkbox" checked />
+              <span>High</span>
+            </label>
+          </div>
+
+          <div class="helper-text" id="coverageText">
+            Loading fuel coverage…
+          </div>
+        </section>
+
+        <section class="card summary-card">
+          <div class="card-header">
+            <h2>Selected range</h2>
+            <p>These figures update with the chart filters.</p>
+          </div>
+          <div class="stats-grid">
+            <article>
+              <span class="stat-label">Range average</span>
+              <strong id="summaryAverage">—</strong>
+              <small>cents per litre</small>
+            </article>
+            <article>
+              <span class="stat-label">Lowest observed</span>
+              <strong id="summaryLow">—</strong>
+              <small>cents per litre</small>
+            </article>
+            <article>
+              <span class="stat-label">Highest observed</span>
+              <strong id="summaryHigh">—</strong>
+              <small>cents per litre</small>
+            </article>
+            <article>
+              <span class="stat-label">Daily points</span>
+              <strong id="summaryDays">—</strong>
+              <small id="summaryObservations">—</small>
+            </article>
+          </div>
+        </section>
+
+        <section class="card chart-card full-width">
+          <div class="chart-header">
+            <div>
+              <h2 id="chartTitle">Fuel price history</h2>
+              <p id="chartSubtitle">Loading data…</p>
+            </div>
+            <div class="legend">
+              <span class="legend-item"><i class="legend-dot avg-dot"></i>Average</span>
+              <span class="legend-item"><i class="legend-dot min-dot"></i>Low</span>
+              <span class="legend-item"><i class="legend-dot max-dot"></i>High</span>
+            </div>
+          </div>
+
+          <div class="chart-container">
+            <canvas id="chartCanvas"></canvas>
+            <div id="chartEmptyState" class="chart-empty-state hidden">
+              No data is available for this combination yet.
+            </div>
+            <div id="chartTooltip" class="chart-tooltip hidden"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

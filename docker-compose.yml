@@ -1,0 +1,16 @@
+services:
+  fuelwatch-history:
+    build: .
+    container_name: fuelwatch-history
+    ports:
+      - "8095:8000"
+    environment:
+      FUELWATCH_AUTO_SYNC: "true"
+      FUELWATCH_CURRENT_MONTH_REFRESH_HOURS: "12"
+      FUELWATCH_REQUEST_TIMEOUT: "60"
+    volumes:
+      - fuelwatch-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  fuelwatch-data:
