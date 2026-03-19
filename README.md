@@ -43,7 +43,7 @@ Use the included `docker-compose.yml`.
 Default port mapping:
 
 - host: `8095`
-- container: `8000`
+- container: `8095`
 
 Persistent volume:
 

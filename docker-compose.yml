@@ -3,7 +3,7 @@ services:
     build: .
     container_name: fuelwatch-history
     ports:
-      - "8095:8000"
+      - "8095:8095"
     environment:
       FUELWATCH_AUTO_SYNC: "true"
       FUELWATCH_CURRENT_MONTH_REFRESH_HOURS: "12"
