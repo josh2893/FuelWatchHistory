@@ -17,6 +17,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @app.on_event("startup")
 def startup_event() -> None:
+    archive.start_scheduler()
     archive.start_background_sync()
 
 
@@ -31,8 +32,8 @@ def status() -> dict:
 
 
 @app.post("/api/sync")
-def trigger_sync(force: bool = True) -> dict:
-    started = archive.start_background_sync(force=force)
+def trigger_sync(force: bool = False, full: bool = False) -> dict:
+    started = archive.start_background_sync(force=force, full=full)
     return {"started": started, "status": archive.get_status()}
 
 

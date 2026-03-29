@@ -183,14 +183,20 @@ function updateSummary(summary) {
 function updateStatus(status) {
   state.status = status;
   if (status.running) {
-    elements.statusPill.textContent = `Syncing ${status.current_month || ''}`.trim();
+    const prefix = status.sync_mode === 'incremental' ? 'Checking updates' : 'Syncing';
+    elements.statusPill.textContent = `${prefix} ${status.current_month || ''}`.trim();
     elements.syncBanner.classList.remove('hidden');
     elements.syncMessage.textContent = `${status.message}. Checked ${status.checked_months} of ${status.total_months} months.`;
     elements.progressFill.style.width = `${status.progress_pct || 0}%`;
     elements.progressLabel.textContent = `${status.progress_pct || 0}%`;
   } else {
     const completed = status.last_completed_sync ? new Date(status.last_completed_sync).toLocaleString() : 'Not yet synced';
-    elements.statusPill.textContent = `Ready · ${completed}`;
+    if (status.next_auto_sync_at) {
+      const nextRun = new Date(status.next_auto_sync_at).toLocaleString();
+      elements.statusPill.textContent = `Ready · ${completed} · Next auto update ${nextRun}`;
+    } else {
+      elements.statusPill.textContent = `Ready · ${completed}`;
+    }
     elements.syncBanner.classList.add('hidden');
   }
 }
@@ -573,7 +579,7 @@ function bindEvents() {
   elements.refreshButton.addEventListener('click', async () => {
     elements.refreshButton.disabled = true;
     try {
-      await fetchJson('/api/sync?force=true', { method: 'POST' });
+      await fetchJson('/api/sync', { method: 'POST' });
       await pollStatus();
     } catch (error) {
       elements.statusPill.textContent = error.message;

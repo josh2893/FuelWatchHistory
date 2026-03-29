@@ -6,7 +6,8 @@ services:
       - "8095:8095"
     environment:
       FUELWATCH_AUTO_SYNC: "true"
-      FUELWATCH_CURRENT_MONTH_REFRESH_HOURS: "12"
+      FUELWATCH_CURRENT_MONTH_REFRESH_HOURS: "24"
+      FUELWATCH_DAILY_SYNC_HOURS: "24"
       FUELWATCH_REQUEST_TIMEOUT: "60"
     volumes:
       - fuelwatch-data:/app/data

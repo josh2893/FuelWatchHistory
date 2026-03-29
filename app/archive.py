@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import csv
-import io
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import requests
 
@@ -23,14 +23,16 @@ DB_DIR = DATA_DIR / "db"
 DB_PATH = Path(os.getenv("FUELWATCH_DB_PATH", str(DB_DIR / "fuelwatch.sqlite3")))
 REQUEST_TIMEOUT = int(os.getenv("FUELWATCH_REQUEST_TIMEOUT", "60"))
 AUTO_SYNC = os.getenv("FUELWATCH_AUTO_SYNC", "true").lower() in {"1", "true", "yes", "on"}
-CURRENT_MONTH_REFRESH_HOURS = int(os.getenv("FUELWATCH_CURRENT_MONTH_REFRESH_HOURS", "12"))
+CURRENT_MONTH_REFRESH_HOURS = int(os.getenv("FUELWATCH_CURRENT_MONTH_REFRESH_HOURS", "24"))
+DAILY_SYNC_HOURS = int(os.getenv("FUELWATCH_DAILY_SYNC_HOURS", "24"))
+SCHEDULER_POLL_SECONDS = int(os.getenv("FUELWATCH_SCHEDULER_POLL_SECONDS", "60"))
 USER_AGENT = os.getenv(
     "FUELWATCH_USER_AGENT",
     "FuelWatchHistory/1.0 (+https://github.com/your-repo)",
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class MonthRef:
     year: int
     month: int
@@ -54,6 +56,7 @@ class FuelWatchArchive:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._status_lock = threading.Lock()
         self._sync_thread: Optional[threading.Thread] = None
+        self._scheduler_thread: Optional[threading.Thread] = None
         self._status = {
             "running": False,
             "started_at": None,
@@ -67,6 +70,8 @@ class FuelWatchArchive:
             "message": "Idle",
             "last_error": None,
             "last_completed_sync": None,
+            "sync_mode": "idle",
+            "next_auto_sync_at": None,
         }
         self._init_db()
         self._load_last_completed_sync()
@@ -135,15 +140,43 @@ class FuelWatchArchive:
             with self._status_lock:
                 self._status["last_completed_sync"] = row["value"]
 
-    def start_background_sync(self, force: bool = False) -> bool:
-        if not AUTO_SYNC and not force:
+    def start_scheduler(self) -> bool:
+        if not AUTO_SYNC:
+            return False
+        with self._status_lock:
+            if self._scheduler_thread and self._scheduler_thread.is_alive():
+                return False
+            next_run = datetime.utcnow() + timedelta(hours=max(1, DAILY_SYNC_HOURS))
+            self._status["next_auto_sync_at"] = next_run.isoformat() + "Z"
+            self._scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                name="fuelwatch-daily-sync-scheduler",
+                daemon=True,
+            )
+            self._scheduler_thread.start()
+            return True
+
+    def _scheduler_loop(self) -> None:
+        interval = max(1, DAILY_SYNC_HOURS)
+        sleep_seconds = max(15, SCHEDULER_POLL_SECONDS)
+        next_run = datetime.utcnow() + timedelta(hours=interval)
+        while True:
+            self._set_status(next_auto_sync_at=next_run.isoformat() + "Z")
+            if datetime.utcnow() >= next_run:
+                self.start_background_sync(force=False, full=False)
+                next_run = datetime.utcnow() + timedelta(hours=interval)
+                self._set_status(next_auto_sync_at=next_run.isoformat() + "Z")
+            time.sleep(sleep_seconds)
+
+    def start_background_sync(self, force: bool = False, full: bool = False) -> bool:
+        if not AUTO_SYNC and not force and not full:
             return False
         with self._status_lock:
             if self._sync_thread and self._sync_thread.is_alive():
                 return False
             self._sync_thread = threading.Thread(
                 target=self._run_sync,
-                kwargs={"force": force},
+                kwargs={"force": force, "full": full},
                 name="fuelwatch-sync",
                 daemon=True,
             )
@@ -169,9 +202,13 @@ class FuelWatchArchive:
         with self._status_lock:
             self._status[field] = int(self._status.get(field, 0)) + amount
 
-    def _run_sync(self, force: bool = False) -> None:
-        today = date.today()
-        months = list(self._iter_months(DEFAULT_START_YEAR, DEFAULT_START_MONTH, today.year, today.month))
+    def _run_sync(self, force: bool = False, full: bool = False) -> None:
+        months, forced_months, sync_mode = self._build_sync_plan(full=full)
+        message = {
+            "full": "Preparing full archive sync",
+            "incremental": "Preparing update check",
+            "initial": "Preparing first archive sync",
+        }.get(sync_mode, "Preparing sync")
         self._set_status(
             running=True,
             started_at=datetime.utcnow().isoformat() + "Z",
@@ -182,8 +219,9 @@ class FuelWatchArchive:
             downloaded_months=0,
             processed_months=0,
             failed_months=0,
-            message="Preparing sync",
+            message=message,
             last_error=None,
+            sync_mode=sync_mode,
         )
 
         session = requests.Session()
@@ -193,10 +231,14 @@ class FuelWatchArchive:
             for month_ref in months:
                 self._set_status(
                     current_month=month_ref.month_key,
-                    message=f"Syncing {month_ref.month_key}",
+                    message=f"Checking {month_ref.month_key}",
                 )
                 try:
-                    self._sync_month(session, month_ref, force=force)
+                    self._sync_month(
+                        session,
+                        month_ref,
+                        force=force or month_ref.month_key in forced_months,
+                    )
                 except Exception as exc:  # pragma: no cover - defensive
                     self._increment_status("failed_months")
                     self._set_status(last_error=str(exc))
@@ -211,19 +253,97 @@ class FuelWatchArchive:
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     ("last_completed_sync", completed_at),
                 )
+            final_message = "Sync complete"
+            if self.get_status()["failed_months"]:
+                final_message = "Sync complete with some issues"
             self._set_status(
                 running=False,
                 finished_at=completed_at,
                 current_month=None,
-                message="Sync complete",
+                message=final_message,
                 last_completed_sync=completed_at,
             )
         finally:
             session.close()
 
+    def _build_sync_plan(self, full: bool = False) -> Tuple[List[MonthRef], Set[str], str]:
+        today = date.today()
+        current_month = MonthRef(today.year, today.month)
+
+        if full:
+            months = list(
+                self._iter_months(
+                    DEFAULT_START_YEAR,
+                    DEFAULT_START_MONTH,
+                    current_month.year,
+                    current_month.month,
+                )
+            )
+            forced_months = {month.month_key for month in months}
+            return months, forced_months, "full"
+
+        latest_processed = self._get_latest_processed_month()
+        pending_months = self._get_pending_months_up_to(current_month)
+
+        if latest_processed is None:
+            months = list(
+                self._iter_months(
+                    DEFAULT_START_YEAR,
+                    DEFAULT_START_MONTH,
+                    current_month.year,
+                    current_month.month,
+                )
+            )
+            return months, {current_month.month_key}, "initial"
+
+        months_by_key: Dict[str, MonthRef] = {
+            month.month_key: month
+            for month in self._iter_months(
+                latest_processed.year,
+                latest_processed.month,
+                current_month.year,
+                current_month.month,
+            )
+        }
+        for month in pending_months:
+            months_by_key[month.month_key] = month
+
+        months = sorted(months_by_key.values())
+        forced_months = {latest_processed.month_key, current_month.month_key}
+        return months, forced_months, "incremental"
+
+    def _get_latest_processed_month(self) -> Optional[MonthRef]:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT year, month
+                FROM sync_months
+                WHERE status = 'processed'
+                ORDER BY year DESC, month DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            return None
+        return MonthRef(year=int(row["year"]), month=int(row["month"]))
+
+    def _get_pending_months_up_to(self, end_month: MonthRef) -> List[MonthRef]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT year, month
+                FROM sync_months
+                WHERE (status IS NULL OR status != 'processed')
+                  AND (year < ? OR (year = ? AND month <= ?))
+                ORDER BY year, month
+                """,
+                (end_month.year, end_month.year, end_month.month),
+            ).fetchall()
+        return [MonthRef(year=int(row["year"]), month=int(row["month"])) for row in rows]
+
     def _sync_month(self, session: requests.Session, month_ref: MonthRef, force: bool = False) -> None:
         row = self._get_month_row(month_ref.month_key)
-        is_current_month = (month_ref.year == date.today().year and month_ref.month == date.today().month)
+        is_current_month = month_ref == MonthRef(date.today().year, date.today().month)
         should_refresh_current = False
         if row and row["downloaded_at"] and is_current_month:
             downloaded_at = datetime.fromisoformat(row["downloaded_at"].replace("Z", "+00:00"))
@@ -390,6 +510,7 @@ class FuelWatchArchive:
                     status, error, last_attempt_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processed', NULL, ?)
                 ON CONFLICT(month_key) DO UPDATE SET
+                    downloaded_at = excluded.downloaded_at,
                     processed_at = excluded.processed_at,
                     file_path = excluded.file_path,
                     file_size = excluded.file_size,
